@@ -22,7 +22,7 @@ from config import (
     MODEL_FILE, OPTUNA_PARAMS_FILE, PLAYER_IMPACT_FILE,
 )
 import data.cache as cache
-from data.autobacktest import log_stats as ab_log_stats, run_auto_backtest
+from data.autobacktest import log_stats as ab_log_stats, run_new_games, run_full_season
 from data.elo import load_elo, save_elo, update_elo
 from data.injuries import (
     apply_injury_adjustment, calc_strength_factor,
@@ -427,24 +427,61 @@ with st.sidebar:
     st.divider()
 
     # ── Auto-backtest ─────────────────────────────────────────────────────
-    st.markdown("#### ⚡ Smart Auto-Backtest")
+    st.markdown("#### 🧠 Blind Season Training")
     _ab = ab_log_stats()
     st.caption(f"📋 {_ab['total']:,} games backtested so far")
-    if st.button("🔍 Backtest New Games Only", use_container_width=True,
-                 help="Detects unprocessed completed games, blindfold-predicts them using pre-game data, retrains on mistakes"):
+
+    # — Full season blind run —
+    if st.button("🏋️ Full Season Blind Run", use_container_width=True,
+                 help="Blindfold-predicts EVERY game this season using pre-game data only, "
+                      "then retrains on all wrong calls. Run once to build the model's memory."):
         if not os.path.exists(MODEL_FILE):
             st.error("⚠️ Train the model first.")
         else:
             _ab_model = load(MODEL_FILE)
             _ab_msgs  = []
-            with st.spinner("Scanning for new games…"):
-                _ab_result = run_auto_backtest(
+            with st.spinner("Running full season blind training… (this may take a few minutes)"):
+                _ab_result = run_full_season(
                     _ab_model, status_cb=lambda m: _ab_msgs.append(m)
                 )
             for m in _ab_msgs:
                 st.caption(m)
             if _ab_result["new"] == 0:
-                st.info("✅ All games already backtested — nothing new.")
+                st.warning("No completed games found.")
+            else:
+                st.success(
+                    f"✅ {_ab_result['new']} games · "
+                    f"{_ab_result['correct']}/{_ab_result['new']} correct "
+                    f"({_ab_result['acc'] * 100:.1f}%) · "
+                    f"{_ab_result['lessons']} lessons injected"
+                )
+                if _ab_result["metrics"]:
+                    _m = _ab_result["metrics"]
+                    st.caption(
+                        f"Retrained — Val Acc: **{_m['val_acc']:.1%}** | "
+                        f"Loss: **{_m['val_loss']:.4f}**"
+                    )
+                    st.session_state.update({
+                        "xgb_model": _ab_model, "model_metrics": _m,
+                        "feat_imp": _m["feat_imp"],
+                    })
+
+    # — Incremental new-games-only run —
+    if st.button("⚡ Backtest New Games Only", use_container_width=True,
+                 help="Only processes games added since the last run. Use this daily."):
+        if not os.path.exists(MODEL_FILE):
+            st.error("⚠️ Train the model first.")
+        else:
+            _ab_model = load(MODEL_FILE)
+            _ab_msgs  = []
+            with st.spinner("Checking for new games…"):
+                _ab_result = run_new_games(
+                    _ab_model, status_cb=lambda m: _ab_msgs.append(m)
+                )
+            for m in _ab_msgs:
+                st.caption(m)
+            if _ab_result["new"] == 0:
+                st.info("✅ All caught up — no new games since last run.")
             else:
                 st.success(
                     f"✅ {_ab_result['new']} new games · "
@@ -453,14 +490,14 @@ with st.sidebar:
                     f"{_ab_result['lessons']} lessons added"
                 )
                 if _ab_result["metrics"]:
-                    m = _ab_result["metrics"]
+                    _m = _ab_result["metrics"]
                     st.caption(
-                        f"Retrained — Val Acc: **{m['val_acc']:.1%}** | "
-                        f"Loss: **{m['val_loss']:.4f}**"
+                        f"Retrained — Val Acc: **{_m['val_acc']:.1%}** | "
+                        f"Loss: **{_m['val_loss']:.4f}**"
                     )
                     st.session_state.update({
-                        "xgb_model": _ab_model, "model_metrics": m,
-                        "feat_imp": m["feat_imp"],
+                        "xgb_model": _ab_model, "model_metrics": _m,
+                        "feat_imp": _m["feat_imp"],
                     })
     st.divider()
 
